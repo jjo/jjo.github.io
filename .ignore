@@ -1,0 +1,8 @@
+.ignore
+.copytxt
+.hg
+.hgignore
+html4.conf
+tidy-options
+awblogo.svg
+*~
