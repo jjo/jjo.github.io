@@ -1,0 +1,1564 @@
+#!/usr/bin/env python
+#
+# Copyright 2007, 2008 Jared Henley <multixrulz@users.sourceforge.net>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import os
+import sys
+import ConfigParser
+import time
+import re
+import shutil
+import fnmatch
+import pickle
+from copy import deepcopy
+
+BUILD_ALL = False
+DRY_RUN = False
+INDENT = ''
+CONFIG_FILE = 'awbdir.conf'
+TEMPLATE_FILE = 'template.conf'
+USAGE = "awb - asciidoc website builder.\nusage: awb [-r] [-d] [-c=/path/to/config/dir] websitename"
+
+class AwbConfig():
+    """Where to read awb configuration files etc"""
+
+    def __init__(self, alt_dir=None):
+        if alt_dir == None:
+            self.conf_dir = self._xdg_config_dir()
+        else:
+            self.conf_dir = alt_dir
+        self.conf_filename = os.path.join(self.conf_dir, 'awb.conf')
+
+    def _xdg_config_dir(self):
+        """Returns the XDG configudation directory"""
+        tmp = os.environ.get('XDG_CONFIG_HOME')
+        if tmp == '':
+            xdg_config = os.path.join(os.path.expanduser('~'), '.config')
+        else:
+            xdg_config = tmp
+        return os.path.join(xdg_config, 'awb')
+
+
+class AwbSite():
+    """awb website information"""
+
+    def __init__(self, sitename, config_dir=None):
+        """Read in awb website configuration and do basic checks
+        sitename: name of site configured in awb config file
+        config_dir: a user-defined directory to use in place of the
+            normal one.
+
+        """
+        awb_config = AwbConfig(config_dir)
+        global_conf = ConfigParser.SafeConfigParser()
+        global_conf.read(awb_config.conf_filename)
+        if sitename in global_conf.sections():
+            site_conf = dict(global_conf.items(sitename))
+            self.root = site_conf['siteroot']
+            self.src_dir = os.path.join(self.root, 'src')
+            self.dest_dir = os.path.join(self.root, 'html')
+            self.asciidoc_options = site_conf['asciidoc options']
+            self.baseurl = site_conf['baseurl']
+            self.tidy_html = (site_conf['tidy'].strip().lower() == 'true')
+        else:
+            exit("awb: site %s not found in configuration." % (sitename))
+
+        # Check for existence of directories
+        if not os.path.isdir(self.root):
+            exit("Site root %s is not a directory." % (self.root))
+        if not os.path.isdir(self.src_dir):
+            exit("Site source %s is not a directory." % (self.src_dir))
+
+        # Read in ignore file
+        self._ignore = [CONFIG_FILE, TEMPLATE_FILE]
+        text = read_file(os.path.join(self.src_dir, '.ignore'), True)
+        if text:
+            self._ignore += re.split('[\n,\r]{1,2}', text)
+        # Read in copytxt file
+        self._copytxt = []
+        text = read_file(os.path.join(self.src_dir, '.copytxt'), True)
+        if text:
+            self._copytxt += re.split('[\n,\r]{1,2}', text)
+
+        # Initialise cache
+        self.cache = AwbCache(os.path.join(awb_config.conf_dir,
+            "%s.cache" % (sitename)))
+
+    def ignore(self, filename):
+        """Returns true if filename is to be ignored"""
+        return fnmatchin(filename, self._ignore)
+
+    def copytxt(self, filename):
+        """Returns true if filename is a text file to be copied"""
+        return fnmatchin(filename, self._copytxt)
+
+
+class AwbCache():
+    """The awb cache for a website"""
+
+    def __init__(self, cache_file_name):
+        """Read the cache from the file cache_file_name and set up
+        a new cache for this run of awb.
+
+        """
+        self._cache_file_name = cache_file_name
+        if os.path.isfile(self._cache_file_name):
+            fh = open(self._cache_file_name, 'rb')
+            self._oldcache = pickle.Unpickler(fh).load()
+            fh.close()
+        else:
+            self._oldcache = None
+        self._newcache = {}
+
+    def save_cache(self):
+        """Save the cache to disk"""
+        fh = open(self._cache_file_name, 'wb')
+        pickler = pickle.Pickler(fh, -1)
+        pickler.dump(self._newcache)
+        fh.close()
+
+    def check_value(self, key, new_value):
+        """Check if the key 'key' is in the cache, and if so, if its value
+        is the same as new_value.  Also saves new_value into the cache.
+
+        """
+        cache_value = self._read_cache(key)
+        stale = new_value != cache_value
+        self._write_cache(key, new_value)
+        return stale
+
+    def check_mtime(self, key, new_mtime):
+        """Check if the key 'key' is in the cache, and if so, if the
+        cached mtime is older than new_mtime.  Also saves new_mtime into
+        the cache.
+
+        """
+        cache_mtime = self._read_cache(key)
+        if cache_mtime == None:
+            stale = (new_mtime != None)
+        else:
+            if new_mtime == None:
+                stale = True
+            else:
+                stale = new_mtime > cache_mtime
+        self._write_cache(key, new_mtime)
+        return stale
+
+    def _read_cache(self, key):
+        """Get data from the cache"""
+        if self._oldcache:
+            if key in self._oldcache.keys():
+                return self._oldcache[key]
+            return None
+
+    def _write_cache(self, key, value):
+        """Add data to the (new) cache"""
+        self._newcache[key] = value
+
+
+class AwbPath():
+    """Various path variations for a given file/directory.
+    Attributes are:
+        rel_parent: path relative to parent directory.
+        rel_root: path relative to the root of the website source.
+        src: full path to source file/directory.
+        dest: full path to destination file/directory.
+        url_parent: url (consisting of ../'s) to the parent directory.
+        url_rel_root: url to this file/directory relative to the website
+            root.
+        url_rel_parent: url to this file/directory relative to its parent.
+        tmp_asciidoc: temporary file written for input to asciidoc.
+        tmp_tidy: temporary file written for input to html tidy.
+        blogdate: path of file with slashes stripped, thus leaving a date
+            string in the format YYYYMMDD[HHMM]
+        basename: filename without last extension.
+        txt: True if extension is .txt.
+        magpost: True if extensions are .mag.txt.
+        galleryroom: True if extensions are .gal.txt.
+            gallery_filename: filename of gallery room without .gal.txt.
+
+    """
+
+    def __init__(self, parent_path, rel_path):
+        """Initialise a path
+            parent_path: AwbPath object of parent
+            rel_path: path to the file/directory, relative to parent
+
+        """
+        # Basic path data
+        self.rel_parent = rel_path
+        if parent_path == None: # Initialise top directory of site
+            self.src = site.src_dir
+            self.dest = site.dest_dir
+            self.rel_root = rel_path
+            self.url_parent = ''
+        else:
+            self.src = os.path.join(parent_path.src, rel_path)
+            self.dest = os.path.join(parent_path.dest, rel_path)
+            self.rel_root = os.path.join(parent_path.rel_root, rel_path)
+            if os.path.isdir(self.src):
+                self.url_parent = "../"
+            else:
+                self.url_parent = "../" * rel_path.count(os.path.sep)
+        self.url_rel_root = '/' + self.rel_root.replace(os.path.sep, '/')
+        self.url_rel_parent = self.rel_parent.replace(os.path.sep, '/')
+
+        # Paths for temporary files
+        self.tmp_asciidoc = os.path.join(site.root, "asciidoc",
+            self.rel_root)
+        self.tmp_tidy = os.path.join(site.root, "tidy", self.rel_root)
+
+        # Strip off path separators for blog date formatting
+        self.blogdate = rel_path.replace(os.path.sep, '')
+        self.blogdate = self.blogdate.replace('.txt', '')
+        self.blogdate = self.blogdate.replace('.mag', '')
+
+        # Detect text files
+        self.basename = os.path.basename(self.src)
+        (remainder, right_ext) = os.path.splitext(self.basename)
+        self.txt = right_ext == '.txt'
+
+        # Detect .gal.txt and .mag.txt and handle
+        (remainder, middle_ext) = os.path.splitext(remainder)
+        # Detect blog magazine files
+        self.magpost = middle_ext == '.mag'
+        # Detect gallery files
+        if (middle_ext == '.gal'):
+            self.galleryroom = True
+            self.gallery_filename = remainder
+            self.dest = self.dest.replace(".gal", "")
+            self.url_rel_root = self.url_rel_root.replace(".gal", "")
+            self.url_rel_parent = self.url_rel_parent.replace(".gal", "")
+        else:
+            self.galleryroom = False
+
+    def convert_to_html(self):
+        """Change extension of html destination files from .txt to .html"""
+        self.dest = "%s.html" % (os.path.splitext(self.dest)[0])
+        self.url_rel_root = "%s.html" % (os.path.splitext(self.url_rel_root)[0])
+        self.url_rel_parent = "%s.html" % (os.path.splitext(self.url_rel_parent)[0])
+
+class AwbDir():
+    """awb directory"""
+
+    def __init__(self, parent_path, directory, parent_config=None,
+        parent_stale=False):
+        """Read in directory information and its files, process them if
+            necessary ready for building.
+
+            directory: path of the directory relative to the parent
+            parent_path: AwbPath object of the parent
+            parent_config: AwbDirConfig object for the parent directory
+            parent_stale: True if the parent directory is out of date
+
+        """
+        self.path = AwbPath(parent_path, directory)
+        self.config = AwbDirConfig(self.path, parent_config)
+        self._cache_check(parent_stale)
+
+        if self.config.universal['type'] == 'normal':
+            self.__class__ = AwbNormalDir
+        if self.config.universal['type'] == 'gallery':
+            self.__class__ = AwbGalleryDir
+        elif self.config.universal['type'] == 'blog':
+            self.__class__ = AwbBlogDir
+
+        self._init_stage2()
+        self._init_stage3()
+        self.sitemap = self._sitemap_entries()
+
+    def _init_stage2(self):
+        """Read in the files and subdirectories.  Stage2 can be redefined
+        if necessary."""
+
+        self._files = []
+        self._subdirs = []
+        ls = os.listdir(self.path.src)
+        for f in ls:
+            path = os.path.join(self.path.src, f)
+            if os.path.isfile(path):
+                awb_file = AwbFile(f, self.path)
+                if awb_file.action != 'ignore':
+                    self._files.append(awb_file)
+            if os.path.isdir(path):
+                if not site.ignore(f):
+                    awb_dir = AwbDir(self.path, f, self.config, self.stale)
+                    self._subdirs.append(awb_dir)
+        self.has_content = len(self._files) > 0
+        if not self.has_content:
+            for d in self._subdirs:
+                if d.has_content:
+                    self.has_content = True
+
+    def _init_stage3(self):
+        """Don't do anything.  Redefine if if stage2 should run and then
+        further processing is required after that."""
+        return
+
+    def _get_output_files(self):
+        """Return a list of filenames that should exist in the destination
+            directory."""
+
+        output_files = [f.path.dest for f in self._files
+            if f.action != 'ignore']
+        for d in self._subdirs:
+            tmp = d._get_output_files()
+            if len(tmp) != 0:
+                output_files.extend(tmp)
+        return output_files
+
+    def delete_extra_files(self):
+        """Delete files in the destination directory that shouldn't be
+        there (deleted from source, accidents, etc)"""
+
+        output_files = self._get_output_files()
+        existing_files = []
+        for root, dirs, files in os.walk(site.dest_dir):
+            for f in files:
+                existing_files.append(os.path.join(root, f))
+        extra_files = [f for f in existing_files if f not in output_files]
+        for f in extra_files:
+            print("Deleting extra file %s" % (f))
+            rm(f)
+
+    def _cache_check(self, parent_stale):
+        """Determine whether a directory is stale and needs to be
+        re-built"""
+        conf_filename = os.path.join(self.path.src, CONFIG_FILE)
+        if os.path.isfile(conf_filename):
+            config_mtime = os.path.getmtime(conf_filename)
+        else:
+            config_mtime = None
+        stale_config = site.cache.check_mtime(conf_filename, config_mtime)
+
+        template_file_name = os.path.join(self.path.src, TEMPLATE_FILE)
+        if os.path.isfile(template_file_name):
+            template_mtime = os.path.getmtime(template_file_name)
+        else:
+            template_mtime = None
+        stale_template = site.cache.check_mtime(template_file_name, template_mtime)
+
+        self.stale = (stale_config or stale_template or
+            parent_stale or BUILD_ALL)
+
+    def _apply_global_templates(self, content, title, description, mtime,
+        url_parent, blog_data=None, gallery_data=None):
+        """Apply main template and sub template to some content"""
+        text = self.config.universal['sub template'].apply(content,
+            title, description, mtime, self.config.universal['name'],
+            self.config.breadcrumbs, url_parent,
+            self.config.universal['user'], blog_data, gallery_data)
+        text = self.config.universal['main template'].apply(text,
+            title, description, mtime, self.config.universal['name'],
+            self.config.breadcrumbs, url_parent,
+            self.config.universal['user'], blog_data, gallery_data)
+        return text
+
+    def build(self):
+        """Build asciidoc files, copy others"""
+        self._build_enter()
+
+        for d in self._subdirs:
+            d.build()
+
+        for f in self._files:
+            if f.action == 'copy':
+                if f.stale:
+                    print("%sCopying %s" % (INDENT, f.path.rel_root))
+                    copy_file(f.path.src, f.path.dest)
+                else:
+                    print("%s%s is up to date." % (INDENT, f.path.rel_root))
+            elif f.action == 'build':
+                if f.stale or self.stale:
+                    print("%sBuilding %s" % (INDENT, f.path.rel_root))
+                    text = self._apply_global_templates(f.text, f.title,
+                        f.description, f.mtime, f.path.url_parent)
+                    callAsciidoc(f.path, text)
+                else:
+                    print("%s%s is up to date." % (INDENT, f.path.rel_root))
+
+        self._build_leave()
+
+    def _build_enter(self):
+        """Print a message upon entering directory during build"""
+        global INDENT
+        if self.path.rel_root == '':
+            print("%sEntering %s" % (INDENT, self.path.src))
+        else:
+            print("%sEntering %s" % (INDENT, self.path.rel_root))
+        self._INDENT_tmp = INDENT
+        INDENT += '  '
+
+    def _build_leave(self):
+        """Print a message upon exiting directory during build"""
+        global INDENT
+        INDENT = self._INDENT_tmp
+        if self.path.rel_root == '':
+            print("%sLeaving %s" % (INDENT, self.path.src))
+        else:
+            print("%sLeaving %s" % (INDENT, self.path.rel_root))
+
+    def _sitemap_entries(self):
+        """Return a list of xml snippets for each file in the directory
+        for concatenating into sitemap.xml"""
+        lines = []
+        for f in self._files:
+            if f.action == 'build':
+                lines.extend(sitemap_snip(f.path.url_rel_root, f.mtime))
+        for d in self._subdirs:
+            lines.extend(d.sitemap)
+        return lines
+
+
+class AwbDirConfig():
+    """awb directory configudation"""
+    def __init__(self, path, parent_config=None):
+        """Read in directory configuration and merge with parent.
+            path: AwbPath object of directory
+            parent_config: AwbDirConfig object of parent.
+
+        """
+        _main_template = AwbTemplate('<?insert content?>', 'main template')
+        _sub_template = AwbTemplate('<?insert content?>', 'sub template')
+        _post_template = AwbTemplate('<?insert content?>', 'post template')
+        _photo_template = AwbTemplate('image::<?insert room filename?>'
+            '/big/<?insert photo filename?>[]\n', 'photo template')
+        _room_photo_template = AwbTemplate('image::<?insert room filename?>'
+            '/small/<?insert photo filename?>[link="<?insert photo filename?>'
+            '.html"]\n', 'room photo template')
+        _room_template = AwbTemplate('= <?insert room title?> =\n\n'
+            '<?insert room intro?>\n\n<?insert content?>', 'room template')
+
+        _universal_defaults = {
+            'type': 'normal',
+            'name': 'Home',
+            'main template': _main_template,
+            'sub template': _sub_template,
+            'user': {}
+            }
+        _blog_defaults = {
+            'num main posts': '5',
+            'num recent posts': '3',
+            'post template': _post_template
+            }
+        _gallery_defaults = {
+            'photo template': _photo_template,
+            'room photo template': _room_photo_template,
+            'room template': _room_template
+            }
+
+        # Values available in each config file section
+        _dir_setup_opts = ('type', 'name')
+        _blog_opts = ('num main posts', 'num recent posts')
+
+        # Initialise
+        if not parent_config:
+            self.universal = deepcopy(_universal_defaults)
+            self.user = {}
+            self.breadcrumbs = []
+        else:
+            self.universal = deepcopy(parent_config.universal)
+            self.user = deepcopy(parent_config.user)
+            self.breadcrumbs = deepcopy(parent_config.breadcrumbs)
+
+        # Read options in from file and overwrite init values
+        template_file_name = os.path.join(path.src, TEMPLATE_FILE)
+        templates = AwbTemplateFile(template_file_name)
+        conf_filename = os.path.join(path.src, CONFIG_FILE)
+        config = ConfigParser.SafeConfigParser()
+        config.read(conf_filename)
+        if config == None:
+            print("awb: Could not read configuration from %s.  "
+                "Using defaults." % conf_filename)
+        else:
+            self._merge(config, 'dir setup', _dir_setup_opts, self.universal)
+            # Name is special -- if it's not set up in a directory,
+            # then inherit and add the directory name
+            if config.has_section('dir setup'):
+                if not config.has_option('dir setup', 'name'):
+                    self.universal['name'] += " %s" % (path.rel_parent)
+            else:
+                self.universal['name'] += " %s" % (path.rel_parent)
+            self.breadcrumbs += [{'name': self.universal['name'],
+                'path': path}]
+            if config.has_section('user'):
+                self.universal['user'].update(config.items('user'))
+            if templates['main template']:
+                self.universal['main template'] = templates['main template']
+            if templates['sub template']:
+                self.universal['sub template'] = templates['sub template']
+
+            if self.universal['type'] == 'blog':
+                self.blog = _blog_defaults
+                if parent_config != None:
+                    if parent_config.universal['type'] == 'blog':
+                        self.blog = deepcopy(parent_config.blog)
+                self._merge(config, 'blog', _blog_opts, self.blog)
+                if templates['post template']:
+                    self.blog['post template'] = templates['post template']
+
+            if self.universal['type'] == 'gallery':
+                self.gallery = _gallery_defaults
+                if parent_config != None:
+                    if parent_config.universal['type'] == 'gallery':
+                        self.gallery = deepcopy(parent_config.gallery)
+                if templates['photo template']:
+                    self.gallery['photo template'] = templates['photo template']
+                if templates['room photo template']:
+                    self.gallery['room photo template'] = templates['room photo template']
+                if templates['room template']:
+                    self.gallery['room template'] = templates['room template']
+
+    def _merge(self, config, section, options, local):
+        """Merge configuration from parent and local options"""
+        if config.has_section(section):
+            for option in options:
+                if config.has_option(section, option):
+                    local[option] = config.get(section, option)
+
+class AwbNormalDir(AwbDir):
+    """awb directory containing asciidoc files only"""
+
+    def _init_stage3(self):
+        """Generate index.html if none present"""
+        if self.has_content:
+            index_found = False
+            for f in self._files:
+                if f.action == 'build':
+                    if f.path.rel_parent == 'index.txt':
+                        index_found = True
+                        break
+            if not index_found:
+                index_text = self._build_index()
+                title = "Index of %s" % (self.config.universal['name'])
+                stale = site.cache.check_value("%s generated index" %
+                    (self.path.rel_root), index_text)
+                index = AwbFile('index.txt', self.path, (index_text,
+                    title), stale)
+                self._files.append(index)
+
+    def _build_index(self):
+        """Create an index file containing links to all other html files
+        and subdirectories"""
+        index = []
+        for d in self._subdirs:
+            if d.has_content:
+                index.append(("%s/index.html" % (d.path.url_rel_parent),
+                    d.config.universal['name']))
+        for f in self._files:
+            if f.action == 'build':
+                index.append((f.path.url_rel_parent, f.title))
+            elif f.action == 'copy':
+                index.append((f.path.url_rel_parent, f.path.url_rel_parent))
+        index.sort(key=lambda idx: idx[1])
+
+        strings = ["Index of %s" % (self.config.universal['name'])]
+        strings.append("=" * len(strings[0]))
+        strings.append("")
+        for i in index:
+            strings.append("* link:%s[%s]" % (i[0], i[1]))
+
+        return "\n".join(strings)
+
+
+class AwbGalleryDir(AwbDir):
+    """awb directory containing asciidoc files and gallery room files"""
+
+    def _init_stage3(self):
+        """Find and galleryroom files and create a file for each image"""
+        photos = []
+        for f in self._files:
+            if f.path.galleryroom:
+                print("%sCreating photo files for room %s" %
+                    (INDENT, f.path.rel_root))
+                room = AwbGalleryFile(f.path)
+                gallery_data = {'room title': room.title,
+                    'room intro': room.intro,
+                    'room filename': f.path.gallery_filename}
+                room_photos = []
+                for p in room.photos:
+                    gallery_data['photo filename'] = p.image_filename
+                    gallery_data['photo title'] = p.title
+                    gallery_data['photo caption'] = p.caption
+                    room_tmp = self._apply_room_photo_template(f.path.url_parent,
+                        gallery_data)
+                    room_photos.append(room_tmp)
+                    photo_text = self._apply_photo_template(f.path.url_parent,
+                        gallery_data)
+                    photo = AwbFile(p.text_filename, self.path, (photo_text,
+                        p.title), f.stale)
+                    photos.append(photo)
+                room_photo_text = "\n".join(room_photos)
+                gallery_data['photo filename'] = ''
+                gallery_data['photo title'] = ''
+                gallery_data['photo caption'] = ''
+                text = self._apply_room_template(room_photo_text, f.mtime,
+                    f.path.url_parent, gallery_data)
+                f.generate(text, room.title, room.intro)
+            else:
+                f.gallery_data = None
+        self._files.extend(photos)
+
+    def _apply_room_template(self, content, mtime, url_parent, gallery_data):
+        """Apply room template to content"""
+        return self.config.gallery['room template'].apply(content,
+            gallery_data['room title'], gallery_data['room intro'],
+            mtime, self.config.universal['name'],
+            self.config.breadcrumbs, url_parent,
+            self.config.universal['user'], None, gallery_data)
+
+    def _apply_room_photo_template(self, url_parent, gallery_data):
+        """Apply room photo template to a photo"""
+        mtime = time.time() # mtime really isn't valid here
+        text =  self.config.gallery['room photo template'].apply('',
+            gallery_data['room title'], gallery_data['room title'],
+            mtime, self.config.universal['name'],
+            self.config.breadcrumbs, url_parent,
+            self.config.universal['user'], None, gallery_data)
+        return text
+
+    def _apply_photo_template(self, url_parent, gallery_data):
+        """Apply photo template to a photo"""
+        mtime = time.time() # mtime really isn't valid here
+        text =  self.config.gallery['photo template'].apply('',
+            gallery_data['photo title'], gallery_data['photo title'],
+            mtime, self.config.universal['name'],
+            self.config.breadcrumbs, url_parent,
+            self.config.universal['user'], None, gallery_data)
+        return text
+
+
+class AwbGalleryFile:
+    """Parser for awb gallery room file.  Attributes are:
+        title: title of the gallery room
+        intro: intro of the gallery room
+        photos: ordered list of photo objects in the gallery room
+
+    """
+
+    def __init__(self, path):
+        """Read in file at 'path' and parse into photos and gallery header"""
+        text = read_file(path.src).splitlines()
+        photoregex = re.compile(r'^\[(.+)\][\r\n]*$')
+        valueregex = re.compile(r'^(.+):(.*)')
+        photo = ''
+        title = ''
+        caption = ''
+        self.title = ''
+        self.intro = ''
+        self.photos = []
+        for line in text:
+            match = photoregex.match(line)
+            if match:
+                if photo:
+                    if photo != 'room':
+                        self.photos.append(AwbPhoto(photo, title, caption))
+                photo = match.group(1)
+                title = ''
+                caption = ''
+            else:
+                match = valueregex.match(line)
+                if match:
+                    if photo == 'room':
+                        if match.group(1).strip() == 'title':
+                            self.title = match.group(2).strip()
+                        elif match.group(1).strip() == 'intro':
+                            self.intro = match.group(2).strip()
+                    else:
+                        if match.group(1).strip() == 'title':
+                            title = match.group(2).strip()
+                        elif match.group(1).strip() == 'caption':
+                            caption = match.group(2).strip()
+        if photo:
+            if photo != 'room':
+                self.photos.append(AwbPhoto(photo, title, caption))
+
+
+class AwbPhoto():
+    """Basically a struct to contain photo attributes accessible by name.
+        image_filename: filename of the image file
+        text_filename: filename of the generated source file for the photo
+        title: title of the photo
+        caption: caption of the photo
+
+    """
+        
+    def __init__(self, filename, title, caption):
+        """Initialise attributes"""
+        self.image_filename = filename
+        self.text_filename = "%s.txt" % (os.path.splitext(filename)[0])
+        self.title = title
+        self.caption = caption
+
+
+class AwbBlogDir(AwbDir):
+    """awb directory containing a blog.  All .txt files will be considered
+    to be blog entries, so if the name doesn't parse into a date/time it
+    will be ignored."""
+
+    def _scan_blog(self, subdir):
+        """Find all paths contained in this subdirectory"""
+        ls = os.listdir(os.path.join(self.path.src, subdir))
+        files = []
+        for f in ls:
+            path = os.path.join(self.path.src, subdir, f)
+            if os.path.isfile(path):
+                awb_file = AwbFile(os.path.join(subdir, f), self.path)
+                awb_file.blog_post_init()
+                if awb_file.action != 'ignore':
+                    files.append(awb_file)
+            if os.path.isdir(path):
+                files += self._scan_blog(os.path.join(subdir, f))
+        return files
+
+    def _init_stage2(self):
+        """Read in directory (and subdirectory) contents and interpret
+        according to blog rules"""
+        self._files = [] # Will contain index and contents only
+        self._subdirs = [] # Because it's expected elsewhere
+        files = self._scan_blog('')
+        self._blogfiles = [f for f in files if f.action == 'build']
+        if len(self._blogfiles) > 0:
+            self.has_content = True
+            self._blogfiles.sort(key=lambda post: post.date, reverse=True)
+        else:
+            self.has_content = False
+        num_recent = int(self.config.blog['num recent posts'])
+        # Sort blog posts into magazines.
+        self._mags = AwbMagazines(self._blogfiles, num_recent)
+        self._copyfiles = [f for f in files if f.action == 'copy']
+
+        if self._mags.total_posts > 0:
+            # These "raw" variables have internal <?insert parent url?>
+            # commands that need to be replaced per file
+            self._blog_recent_raw = self._mags.recent_posts
+            self._mag_recent_raw = self._mags.recent_magazines
+            self._mag_contents_raw = self._mags[0].contents
+            blog_data = self._default_blog_data()
+            # Create index and contents files
+            contents_file = self._build_contents_file()
+            self._files.append(contents_file)
+            index_file = self._build_index_file(blog_data)
+            self._files.append(index_file)
+
+    def _get_output_files(self):
+        """Return a list of files that should appear in the destination
+        directory"""
+        output_files = [f.path.dest for f in self._copyfiles]
+        output_files.extend(self._mags.output_files)
+        for f in self._files:
+            output_files.append(f.path.dest)
+        return output_files
+
+    def _default_blog_data(self):
+        """Default data for blogs -- eliminates duplication"""
+        return {'blog recent': self._blog_recent(''),
+                'magazine recent': self._mag_recent(''),
+                'magazine contents': self._mag_contents(''),
+                'magazine title': 'News',
+                'magazine date': time.localtime()}
+                
+    def build(self):
+        """Build magazines and index/contents, copy others"""
+        self._build_enter()
+
+        if self._mags.total_posts > 0:
+            # Initialise blog_data
+            blog_data = self._default_blog_data()
+            if not self._mags[0].news:
+                blog_data['magazine title'] = self._mags[0].mag_post.title
+                mag_contents_stale = self._mags[0].contents_stale
+            else:
+                blog_data['magazine title'] = "News"
+                mag_contents_stale = site.cache.check_value("%s News contents" %
+                    (self.path.rel_parent), self._mags[0].contents)
+            # Initialise staleness vars
+            blog_recent_stale = site.cache.check_value("%s blog recent" %
+                (self.path.rel_parent), blog_data['blog recent'])
+            mag_recent_stale = site.cache.check_value("%s magazine recent" %
+                (self.path.rel_parent), blog_data['magazine recent'])
+
+        (use_blog_recent, use_mag_recent, use_mag_contents) = self._using_recent()
+
+        # Build other files (index and contents)
+        for f in self._files:
+            if (f.stale or self.stale or
+                (use_blog_recent and blog_recent_stale) or
+                (use_mag_recent and mag_recent_stale) or
+                (use_mag_contents and mag_contents_stale)):
+                print("%sBuilding %s" % (INDENT, f.path.rel_root))
+                text = self._apply_global_templates(f.text, f.title,
+                    f.description, f.mtime, f.path.url_parent, blog_data)
+                callAsciidoc(f.path, text)
+            else:
+                print("%s%s is up to date." % (INDENT, f.path.rel_root))
+        for f in self._copyfiles:
+            if f.stale:
+                print("%sCopying %s" % (INDENT, f.path.rel_root))
+                copy_file(f.path.src, f.path.dest)
+            else:
+                print("%s%s is up to date." % (INDENT, f.path.rel_root))
+
+        # Build all blog entries
+        for m in self._mags:
+            # Set up magazine contents
+            if m.news:
+                mag_contents_stale = site.cache.check_value("%s News contents" %
+                    (self.path.rel_parent), m.contents)
+            else:
+                mag_contents_stale = m.contents_stale
+            self._mag_contents_raw = m.contents
+
+            if not m.news:
+                if (m.mag_post.stale or self.stale or
+                    (use_blog_recent and blog_recent_stale) or
+                    (use_mag_recent and mag_recent_stale) or
+                    (use_mag_contents and mag_contents_stale)):
+                    # Set up blog_data
+                    print("%sBuilding %s" %
+                        (INDENT, m.mag_post.path.rel_root))
+                    blog_data['magazine date'] = m.mag_post.date
+                    blog_data['magazine title'] = m.mag_post.title
+                    blog_data['blog recent'] = self._blog_recent(
+                        m.mag_post.path.url_parent)
+                    blog_data['magazine recent'] = self._mag_recent(
+                        m.mag_post.path.url_parent)
+                    blog_data['magazine contents'] = self._mag_contents(
+                        m.mag_post.path.url_parent)
+                    # Build
+                    text = self._apply_post_template(m.mag_post, blog_data)
+                    text = self._apply_global_templates(text,
+                        m.mag_post.title, m.mag_post.description,
+                        m.mag_post.date_mtime, m.mag_post.path.url_parent,
+                        blog_data)
+                    callAsciidoc(m.mag_post.path, text)
+                else:
+                    print("%s%s is up to date." % (INDENT,
+                        m.mag_post.path.rel_root))
+            for p in m.posts:
+                if (p.stale or self.stale or
+                    (use_blog_recent and blog_recent_stale) or
+                    (use_mag_recent and mag_recent_stale) or
+                    (use_mag_contents and mag_contents_stale)):
+                    # Set up blog data
+                    print("%sBuilding %s" %
+                        (INDENT, p.path.rel_root))
+                    blog_data['blog recent'] = self._blog_recent(
+                        p.path.url_parent)
+                    blog_data['magazine recent'] = self._mag_recent(
+                        p.path.url_parent)
+                    blog_data['magazine contents'] = self._mag_contents(
+                        p.path.url_parent)
+                    # Build
+                    text = self._apply_post_template(p, blog_data)
+                    text = self._apply_global_templates(text, p.title,
+                        p.description, p.date_mtime, p.path.url_parent,
+                        blog_data)
+                    callAsciidoc(p.path, text)
+                else:
+                    print("%s%s is up to date." % (INDENT,
+                        p.path.rel_root))
+
+        self._build_leave()
+
+    def _blog_recent(self, url_parent):
+        return self._blog_recent_raw.replace('<?insert parent url?>',
+            url_parent)
+
+    def _mag_recent(self, url_parent):
+        return self._mag_recent_raw.replace('<?insert parent url?>',
+            url_parent)
+
+    def _mag_contents(self, url_parent):
+        return self._mag_contents_raw.replace('<?insert parent url?>',
+            url_parent)
+
+    def _using_recent(self):
+        use_blog_recent = (
+            self.config.universal['main template'].has_blog_recent
+            or self.config.universal['sub template'].has_blog_recent
+            or self.config.blog['post template'].has_blog_recent)
+
+        use_mag_recent = (
+            self.config.universal['main template'].has_magazine_recent
+            or self.config.universal['sub template'].has_magazine_recent
+            or self.config.blog['post template'].has_magazine_recent)
+
+        use_mag_contents = (
+            self.config.universal['main template'].has_magazine_contents
+            or self.config.universal['sub template'].has_magazine_contents
+            or self.config.blog['post template'].has_magazine_contents)
+        return (use_blog_recent, use_mag_recent, use_mag_contents)
+
+    def _build_index_file(self, blog_data):
+        """Generate index.  This is a page with the n recent posts on it"""
+        parts = []
+        num_posts = int(self.config.blog['num main posts'])
+        num_posts = min(num_posts, len(self._blogfiles))
+
+        stale = False
+        for p in self._blogfiles[0:num_posts]:
+            if p.stale == True:
+                stale = True
+            post_text = self._apply_post_template(p, blog_data)
+            parts.append(post_text)
+        text = "\n".join(parts)
+        index_file = AwbFile('index.txt', self.path, (text,
+            self.config.universal['name']), stale)
+        return index_file
+
+    def _apply_post_template(self, post, blog_data):
+        """Apply the blog post template to a blog post"""
+        return self.config.blog['post template'].apply(post.text,
+            post.title, post.description, post.date_mtime,
+            self.config.universal['name'], self.config.breadcrumbs,
+            post.path.url_parent, self.config.universal['user'], blog_data)
+
+    def _build_contents_file(self):
+        """Generate contents.  This is a page listing all posts in the blog"""
+        stale = self._mags.contents_stale or self.stale
+        heading = "Contents of %s" % (self.config.universal['name'])
+        lines = [""]
+        lines.append(heading)
+        lines.append("=" * len(heading))
+        lines.append("")
+        lines.append(self._mags.contents)
+        text = "\n".join(lines)
+        text = text.replace('<?insert parent url?>', '')
+        contents_file = AwbFile('contents.txt', self.path,
+            (text, "Contents of %s" % (self.config.universal['name'])), stale)
+        return contents_file
+
+    def _sitemap_entries(self):
+        """Return a list of xml snippets for each file in the directory
+        for concatenating into sitemap.xml"""
+        lines = []
+        for f in self._files:
+            if f.action == 'build':
+                lines.extend(sitemap_snip(f.path.url_rel_root, f.mtime))
+        for m in self._mags:
+            if not m.news:
+                lines.extend(sitemap_snip(m.mag_post.path.url_rel_root,
+                    m.mag_post.mtime))
+            for p in m.posts:
+                lines.extend(sitemap_snip(p.path.url_rel_root, p.mtime))
+        return lines
+
+class AwbMagazines():
+    """Parses a list of blog posts into a collection of awb magazines.
+    AwbMagazines can be addressed like a list to get individual magazines
+
+    """
+
+    def __init__(self, blog_posts, num_recent):
+        """Takes all the posts of a blog and splits them into magazines
+            blog posts: date-sorted list of blog posts
+            num_recent: the number of recent magazines/posts to show
+
+        """
+        # Sort posts into magazines
+        self._magazines = []
+        self.total_posts = len(blog_posts)
+        if self.total_posts > 0:
+            # If first post is not a magazine, generate a "News"
+            # magazine
+            if blog_posts[0].path.magpost:
+                m = AwbMagazine(blog_posts[0])
+                start_index = 1
+            else:
+                m = AwbMagazine(None)
+                startindex = 0
+            # Process the remaining posts
+            for f in blog_posts[startindex:]:
+                if f.path.magpost:
+                    m.build_contents()
+                    self._magazines.append(m)
+                    m = AwbMagazine(f)
+                else:
+                    m.add_post(f)
+            m.build_contents()
+            self._magazines.append(m)
+        # Get contents of all magazines
+        contents_lines = []
+        self.contents_stale = False
+        for mag in self._magazines:
+            if mag.contents_stale:
+                self.contents_stale = True
+            contents_lines.append(mag.contents)
+        self.contents = "\n".join(contents_lines)
+        # Generate recent posts
+        num_recent_posts = min(num_recent, self.total_posts)
+        recent_post_lines = []
+        for p in blog_posts[:num_recent_posts]:
+            recent_post_lines.append("* link:<?insert parent url?>%s[%s]" %
+                (p.path.url_rel_parent, p.title))
+        self.recent_posts = "\n".join(recent_post_lines)
+
+        # Generate recent magazines
+        recent_mag_lines = []
+        if len(self._magazines) > 0:
+            if self._magazines[0].news:
+                start_index = 1
+                end_index = min(num_recent + 1, len(self._magazines))
+            else:
+                start_index = 0
+                end_index = min(num_recent, len(self._magazines) + 1)
+            for m in self._magazines[start_index:end_index]:
+                recent_mag_lines.append("* link:<?insert parent url?>%s[%s]" %
+                    (m.mag_post.path.url_rel_parent,
+                    m.mag_post.title))
+        self.recent_magazines = "\n".join(recent_mag_lines)
+
+        # Create output files list
+        self.output_files = []
+        for mag in self._magazines:
+            if not mag.news:
+                self.output_files.append(mag.mag_post.path.dest)
+            for p in mag.posts:
+                self.output_files.append(p.path.dest)
+
+    def __getitem__(self, index):
+        return self._magazines[index]
+
+
+class AwbMagazine():
+    """Representation of a blog magazine"""
+    def __init__(self, mag_post):
+        """Initialise a magazine with its magazine post"""
+        if mag_post == None:
+            self.news = True
+        else:
+            self.news = False
+            self.mag_post = mag_post
+        self.posts = []
+
+    def add_post(self, post):
+        """Continue to add child posts until all are added"""
+        self.posts.append(post)
+
+    def build_contents(self):
+        """Create a magazine contents string/file"""
+        self.contents_stale = False
+        contents = []
+        if self.news:
+            # News is divided by month
+            month = None
+            for p in self.posts:
+                if p.stale:
+                    self.contents_stale = True
+                if p.date[1] != month:
+                    heading = time.strftime("%B %Y", p.date)
+                    contents.append("")
+                    contents.append(heading)
+                    contents.append("-" * len(heading))
+                    contents.append("")
+                    month = p.date[1]
+                datestr = time.strftime("%A, %B %e %Y", p.date)
+                contents.append("* link:<?insert parent url?>%s[%s] %s" %
+                    (p.path.url_rel_parent, p.title, datestr))
+        else:
+            # Magazines are not divided by month
+            datestr = time.strftime("%A, %B %e %Y", self.mag_post.date)
+            magazine_link = ("== link:<?insert parent url?>%s[%s] ==" %
+                (self.mag_post.path.url_rel_parent, self.mag_post.title))
+            contents.append("")
+            contents.append(magazine_link)
+            contents.append("")
+            contents.append(datestr)
+            contents.append("")
+
+            for p in self.posts:
+                datestr = time.strftime("%A, %B %e %Y", p.date)
+                contents.append("* link:<?insert parent url?>%s[%s] %s" %
+                    (p.path.url_rel_parent, p.title, datestr))
+
+        self.contents = "\n".join(contents)
+        if not self.news:
+            self.contents_stale = site.cache.check_value("%s magazine contents" %
+                (self.mag_post.path.rel_root), self.contents)
+
+class AwbFile():
+    """Represents a file"""
+
+    def __init__(self, filename, directory, generated_file=None, stale=None):
+        """Initialise a file, possibly with generated content.
+            filename: name of file relative to directory supplied
+            directory: AwbPath object of containing directory
+            generated_file: (text, description)
+                text: file text for generated (index/contents etc.) file
+                description: HTML meta description for generated file
+
+        """
+        self.path = AwbPath(directory, filename)
+        if (generated_file != None):
+            (self._text, self._title) = generated_file
+            self._generated = True
+            self.mtime = time.time()
+        else:
+            self._generated = False
+            self.mtime = os.path.getmtime(self.path.src)
+
+        self.action = self._determine_action()
+
+        if stale != None:
+            self.stale = stale
+        else:
+            self.stale = self._check_mtimes()
+        if BUILD_ALL:
+            self.stale = True
+
+    def _check_mtimes(self):
+        """Determine if a file is stale"""
+        if self._generated:
+            return True
+        if os.path.exists(self.path.dest):
+            mtime_src = os.path.getmtime(self.path.src)
+            mtime_dest = os.path.getmtime(self.path.dest)
+            return mtime_src > mtime_dest
+        else:
+            return True
+
+    def _determine_action(self):
+        """Determine what action to take on a file"""
+        if site.ignore(self.path.basename):
+            return 'ignore'
+        else:
+            if self.path.txt:
+                if site.copytxt(self.path.basename):
+                    return 'copy'
+                else:
+                    self.path.convert_to_html()
+                    return 'build'
+            else:
+                return 'copy'
+
+    def blog_post_init(self):
+        """If file is a blog post, parse its filename to get post date"""
+        if self.action != 'build':
+            self.blogpost = False
+            return
+        self.blogpost = True
+        timestr = self.path.blogdate
+        try:
+            if len(timestr) == 8:
+                self.date = time.strptime(timestr, '%Y%m%d')
+            elif len(timestr) == 10:
+                self.date = time.strptime(timestr, '%Y%m%d%H')
+            elif len(timestr) == 12:
+                self.date = time.strptime(timestr, '%Y%m%d%H%M')
+            else:
+                raise ValueError
+        except ValueError:
+            print("Blog post error: %s doesn't form a valid date/time." %
+                self.path.rel_root)
+            self.action = 'ignore'
+            self.blogpost = False
+        else:
+            self.date_mtime = time.mktime(self.date)
+
+    def _get_title(self):
+        """Get a title from the first line (heading) of the file"""
+        if self._generated:
+            return self._title
+        else:
+            text = read_file(self.path.src).splitlines()
+            if len(text) > 0:
+                firstline = text[0].strip()
+            else:
+                firstline = ''
+        # Remove AsciiDoc heading formatting
+        match = re.search(r'^[=]+ (.*) [=]+$', firstline)
+        if match:
+            title = re.sub(r'^[=]+ (.*) [=]+$', match.group(1), firstline)
+        else:
+            title = firstline
+        return title
+
+    def _get_description(self):
+        """Get the description of a file from the 4th line, if it is
+        an asciidoc comment"""
+        if self._generated:
+            return self._title
+        else:
+            text = read_file(self.path.src).splitlines()
+            if len(text) >= 4:
+                desc_line = text[3]
+                # Description begins with an AsciiDoc comment
+                if desc_line[0:2] == '//':
+                    return desc_line[2:].strip()
+
+    def _get_text(self):
+        """Return the text of a file"""
+        if self._generated:
+            return self._text
+        else:
+            return read_file(self.path.src)
+
+    def generate(self, text, title, description):
+        """Replace a real file with a generated one -- this is for
+        gallery room files, basically."""
+        self._generated = True
+        self._title = title
+        self._text = text
+        self._description = description
+
+    title = property(_get_title)
+    description = property(_get_description)
+    text = property(_get_text)
+
+
+class AwbTemplateFile:
+    """Parses an awb template file and creates child AwbTemplate objects
+    Templates may be accessed using this object as a dictionary
+
+    """
+
+    def __init__(self, filename):
+        """Parse a template file"""
+        self._templates = []
+
+        if os.path.isfile(filename):
+            text = read_file(filename).splitlines()
+            # Regex detects config file sections such as [section]
+            # on a line by itself
+            regex = re.compile(r'^\[(.+)\][\r\n]*$')
+            section = None
+            template_lines = []
+            for line in text:
+                match = regex.match(line)
+                if match:
+                    if section:
+                        template = AwbTemplate("\n".join(template_lines),
+                            section)
+                        self._templates.append(template)
+                    section = match.group(1)
+                    template_lines = []
+                else:
+                    template_lines.append(line)
+            if section:
+                template = AwbTemplate("\n".join(template_lines), section)
+                self._templates.append(template)
+
+    def __getitem__(self, key):
+        for t in self._templates:
+            if t.name == key:
+                return t
+        return None
+
+
+class AwbTemplate:
+    """An awb template that can do command replacements."""
+
+    def __init__(self, text, name):
+        """Set up attributes"""
+        self.name = name
+        self._text = text
+
+    def _has_blog_recent(self):
+        return re.search(r'<\?\s*insert\s+blog\s+recent\s*\?>',
+            self._text) != None
+
+    def _has_magazine_recent(self):
+        return re.search(r'<\?\s*insert\s+magazine\s+recent\s*\?>',
+            self._text) != None
+
+    def _has_magazine_contents(self):
+        return re.search(r'<\?\s*insert\s+magazine\s+contents\s*\?>',
+            self._text) != None
+
+    has_blog_recent = property(_has_blog_recent)
+    has_magazine_recent = property(_has_magazine_recent)
+    has_magazine_contents = property(_has_magazine_contents)
+
+    def apply(self, content, title, description, mtime, dir_name,
+        breadcrumbs, url_parent, user_data=None, blog_data=None, gallery_data=None):
+        """Do replacements specified in a template
+
+        content: file content
+        title: file title
+        description: file description (for metadata)
+        mtime: number of seconds since epoch (eg os.path.getmtime())
+        dir_name: name of containing directory
+        breadcrumbs: list of dictionaries showing descent to this file
+            name: directory name
+            path: AwbPath object of directory
+        user_data: user data specified in awbdir.conf
+        blog_data: dictionary of blog replacements
+            'blog recent'
+            'magazine recent'
+            'magazine contents'
+            'magazine title'
+            'magazine date'
+        gallery_data: dictionary of gallery replacements
+            'room title'
+            'room intro'
+            'room filename'
+            'photo filename'
+            'photo title'
+            'photo caption'
+
+        """
+
+        text = self._text
+        # Do global replacements
+        # Site Root
+        text = swap(r'<\?\s*insert\s+siteroot\s*\?>', site.root, text)
+        slash_count = len(breadcrumbs) - 1
+        text = swap(r'<\?\s*insert\s+siteroot\s+dots\s*\?>',
+            "%s%s" % (url_parent, "../" * slash_count), text)
+        # Title
+        if title == None:
+            title = ''
+        text = swap(r'<\?\s*insert\s+title\s*\?>', title, text)
+        # Description
+        if description != None:
+            text = swap(r'<\?\s*insert\s+meta\s+description\s+html\s*\?>',
+                '<meta name="description" content="%s">' % (description), text)
+            text = swap(r'<\?\s*insert\s+meta\s+description\s+html\s*\?>',
+                '<meta name="description" content="%s" />' % (description), text)
+        # Content
+        text = swap(r'<\?\s*insert\s+content\s*\?>', content, text)
+        #Breadcrumbs
+        breadcrumb_links = []
+        slash_count = len(breadcrumbs) - 1
+        for b in breadcrumbs:
+            breadcrumb_links.append("\n* link:%s%sindex.html[%s]" %
+                (url_parent, "../" * slash_count, b['name']))
+            slash_count -= 1
+        # Add a breadcrumb for the current file too
+        if title != '':
+            breadcrumb_links.append("\n* %s" % (title))
+        breadcrumb_text = "".join(breadcrumb_links)
+
+        text = swap(r'<\?\s*insert\s+breadcrumbs\s*\?>', breadcrumb_text,
+            text)
+        if dir_name:
+            text = swap(r'<\?\s*insert\s+name\s*\?>', dir_name, text)
+        # User data
+        if user_data:
+            for key in user_data.keys():
+                text = swap(r'<\?\s*insert\s+user\s+option\s+"%s"\s*\?>' %
+                    (key), user_data[key], text)
+        # Page date
+        date = time.localtime(mtime)
+        text = swap(r'<\?\s*insert\s+page\s+date\s*\?>',
+            time.strftime("%A, %B %e %Y", date), text)
+        match = re.search(r'<\?\s*insert\s+page\s+date\s+"([^"\r\n]+)"\s*\?>',
+            text)
+        while match:
+            text = swap(r'<\?\s*insert\s+page\s+date\s+"([^"\r\n]+)"\s*\?>',
+                time.strftime(match.group(1), date), text, 1)
+            match = re.search(r'<\?\s*insert\s+page\s+date\s+"([^"\r\n]+)"\s*\?>',
+                text)
+
+        # Do blog data replacements
+        if not blog_data:
+            blog_data = {'blog recent': '',
+                'magazine recent': '',
+                'magazine contents': '',
+                'magazine title': '',
+                'magazine date': time.localtime()}
+        text = swap(r'<\?\s*insert\s+blog\s+recent\s*\?>',
+            blog_data['blog recent'], text)
+        text = swap(r'<\?\s*insert\s+magazine\s+recent\s*\?>',
+            blog_data['magazine recent'], text)
+        text = swap(r'<\?\s*insert\s+magazine\s+contents\s*\?>',
+            blog_data['magazine contents'], text)
+        text = swap(r'<\?\s*insert\s+magazine\s+title\s*\?>',
+            blog_data['magazine title'], text)
+        text = swap(r'<\?\s*insert\s+magazine\s+date\s*\?>',
+            time.strftime("%A, %B %e %Y", blog_data['magazine date']), text)
+        match = re.search(r'<\?\s*insert\s+magazine\s+date\s+"([^"\r\n]+)"\s*\?>',
+            text)
+        while match:
+            text = swap(r'<\?\s*insert\s+magazine\s+date\s+"([^"\r\n]+)"\s*\?>',
+                time.strftime(match.group(1), blog_data['magazine date']), text, 1)
+            match = re.search(r'<\?\s*insert\s+magazine\s+date\s+"([^"\r\n]+)"\s*\?>',
+                text)
+
+        # Do gallery data replacements
+        if not gallery_data:
+            gallery_data = {'room title': '',
+                'room intro': '',
+                'room filename': '',
+                'photo filename': '',
+                'photo title': '',
+                'photo caption': ''}
+        text = swap(r'<\?\s*insert\s+room\s+title\s*\?>',
+            gallery_data['room title'], text)
+        text = swap(r'<\?\s*insert\s+room\s+intro\s*\?>',
+            gallery_data['room intro'], text)
+        text = swap(r'<\?\s*insert\s+room\s+filename\s*\?>',
+            gallery_data['room filename'], text)
+        text = swap(r'<\?\s*insert\s+photo\s+filename\s*\?>',
+            gallery_data['photo filename'], text)
+        text = swap(r'<\?\s*insert\s+photo\s+title\s*\?>',
+            gallery_data['photo title'], text)
+        text = swap(r'<\?\s*insert\s+photo\s+caption\s*\?>',
+            gallery_data['photo caption'], text)
+
+        return text
+
+def swap(pattern, replace, string, count=0):
+    """Same as re.sub() except that it leaves repl alone.
+    For example, re.sub() will process things like \1 \2 and \n
+    in the replacement string."""
+    return re.sub(pattern, lambda match: replace, string, count)
+
+def write_file(text, filename):
+    """Write a file to disk"""
+    fh = open(filename, 'w')
+    fh.write(text)
+    fh.close()
+
+def rm(filename):
+    """Delete a file from disk"""
+    if os.path.isfile(filename) or os.path.islink(filename):
+        os.remove(filename)
+    elif os.path.isdir(filename):
+        shutil.rmtree(filename)
+
+def copy_file(src, dest):
+    """Copy a file"""
+    if DRY_RUN:
+        return
+    if not os.path.isdir(os.path.split(dest)[0]):
+        os.makedirs(os.path.split(dest)[0])
+    shutil.copyfile(src, dest)
+
+def read_file(filename, fail_silently = False):
+    """Read a file from disk"""
+    try:
+        fh = open(filename, 'r')
+        text = fh.read()
+        fh.close()
+    except IOError as e:
+        if not fail_silently:
+            print("IO Error:", e)
+        return None
+    return text
+
+def fnmatchin(name, patterns):
+    """See if a name is found in a list of patterns"""
+    for p in patterns:
+        if fnmatch.fnmatch(name, p):
+            return True
+    return False
+
+def sitemap_snip(url_rel_root, mtime):
+    """Create an XML snippet for sitemap.xml"""
+    lines = [" <url>",
+        "     <loc>%s%s</loc>" % (site.baseurl, url_rel_root),
+        "     <lastmod>%s</lastmod>" % (
+            time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(mtime))),
+        " </url>"]
+    return lines
+
+def callAsciidoc(path, text):
+    """Call AsciiDoc, and also HTML Tidy if required"""
+    if DRY_RUN:
+        return
+    # Ensure directories exist
+    tidy_avail = (os.system('which tidy >/dev/null') == 0)
+    if not os.path.isdir(os.path.split(path.dest)[0]):
+        os.makedirs(os.path.split(path.dest)[0])
+    if not os.path.isdir(os.path.split(path.tmp_asciidoc)[0]):
+        os.makedirs(os.path.split(path.tmp_asciidoc)[0])
+    if tidy_avail and site.tidy_html:
+        if not os.path.isdir(os.path.split(path.tmp_tidy)[0]):
+            os.makedirs(os.path.split(path.tmp_tidy)[0])
+        asciidoc_dest = path.tmp_tidy
+    else:
+        asciidoc_dest = path.dest
+
+    # Run asciidoc
+    write_file(text, path.tmp_asciidoc)
+    asciidoccmd = "asciidoc %s -o '%s' '%s'" % (site.asciidoc_options,
+        asciidoc_dest, path.tmp_asciidoc)
+    if os.system(asciidoccmd) != 0:
+        print("AsciiDoc error.  Input file left at %s." %
+            (path.tmp_asciidoc))
+    else:
+        rm(path.tmp_asciidoc)
+
+    # Run tidy
+    if tidy_avail and site.tidy_html:
+        tidycmd = "cat '%s' | tidy -config %s -o '%s'" % (path.tmp_tidy,
+            os.path.join(site.src_dir, 'tidy-options'), path.dest)
+        tidy_return = os.system(tidycmd)
+        if tidy_return == 0:
+            rm(path.tmp_tidy)
+        elif tidy_return == 1:
+            print("HTML Tidy warning.  Input file left at %s." %
+                (path.tmp_tidy))
+        elif tidy_return == 2:
+            print("HTML Tidy error.  Input file left at %s." %
+                (path.tmp_tidy))
+    else:
+        if site.tidy_html and not tidy_avail:
+            print("HTML Tidy not available, skipping.")
+
+def clean_dir(path):
+    """Delete empty directories under path"""
+    if os.path.exists(path):
+        if os.path.isdir(path):
+            os.system("find %s -type d -empty -delete" % (path))
+
+if __name__ == "__main__":
+    # Parse the commandline
+    if 2 <= len(sys.argv) <= 5:
+        # sitename is always the last option
+        sitename = sys.argv[len(sys.argv)-1]
+        if sitename[0] == '-':
+            print("No websitename supplied.")
+            exit(USAGE)
+        options = sys.argv[1:len(sys.argv)-1]
+        config_dir = None
+        for o in options:
+            if o == '-r':
+                BUILD_ALL = True
+            elif o == '-d':
+                print("Dry run option enabled.")
+                DRY_RUN = True
+            elif o[0:3] == '-c=':
+                config_dir = o[3:].strip('\'"')
+                print("Using user-specified configuration directory '%s'" %
+                    (config_dir))
+            else:
+                print("Unrecognised option %s" % (o))
+                exit(USAGE)
+        site = AwbSite(sitename, config_dir)
+    else:
+        exit(USAGE)
+    website = AwbDir(None, '')
+    website.build()
+    if DRY_RUN:
+        exit()
+    website.delete_extra_files()
+    site.cache.save_cache()
+    # Delete empty directories in tmp directories
+    clean_dir(os.path.join(site.root, "asciidoc"))
+    clean_dir(os.path.join(site.root, "tidy"))
+    clean_dir(site.dest_dir)
+    # Create Sitemap
+    print("Generating sitemap.xml")
+    lines = ["""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">"""]
+    lines.extend(website.sitemap)
+    lines.append("</urlset>")
+    xml = "\n".join(lines)
+    write_file(xml, os.path.join(site.dest_dir, 'sitemap.xml'))
+

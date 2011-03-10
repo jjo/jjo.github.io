@@ -1,7 +1,13 @@
-AWB=$(HOME)/src/hg/awb/awb
+AWB=bin/awb
 
-all: force
-force: 
-	$(AWB) -c=$(HOME)/.config/awb sample
+all: build 
+build: 
+	$(AWB) -c=bin/ jjo-homepage
+
+browse:
+	set
+	chromium-browser html/index.html
 
 
+clean:
+	rm -rf html/

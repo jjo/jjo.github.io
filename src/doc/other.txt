@@ -1,0 +1,25 @@
+Other things I love
+===================
+
+Academia
+--------
+
+I've been an assistant professor at the
+link:http://www.um.edu.ar[Universidad de Mendoza]
+since 1999.
+
+There I've been giving undergraduate and postgraduate courses
+involving the following topics
+  POSIX API development::
+    point to git ext repo
+
+  Advanced TCP/IP::
+    foo
+ 
+  Operating Systems development::
+    bar
+
+Hackivism
+---------
+
+Patches and stuff

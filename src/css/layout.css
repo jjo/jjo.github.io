@@ -1,0 +1,92 @@
+html, body {
+    margin: 0;
+    border: 0;
+    padding: 0;
+    background: #4EA4A9;
+}
+
+h1 {
+    color: #DD1B00;
+}
+
+#cont {
+    margin: 0 auto 0 auto;
+    border: 0;
+    padding: 0;
+    width: 54em;
+    background: #D79622;
+}
+
+#nav {
+    width: 12em;
+    padding: 0.5em 0 2em 0;
+    float: left;
+    background: #FDEDD0;
+}
+
+#content {
+    width: 40em;
+    border: 0;
+    padding: 0.6em;
+    float: right;
+    background: #FDEDD0;
+}
+
+#foot {
+    clear: both;
+    color: black;
+    padding: 0.5em 0.5em 0.5em 12.5em;
+    background: #D8D9DF;
+}
+
+#foot p {
+    text-align: center;
+}
+
+#nav ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+#nav li {
+    list-style: none;
+    margin: 0;
+}
+
+#nav li a:before {
+    content: "\0020 \0020 \0020 \00BB \0020";
+}
+
+#nav ul a {
+    display: block;
+    margin: 0;
+    border-style: solid;
+    border-width: 1px 6px 1px 6px;
+    border-color: #611A8E;
+    padding: 4px 1px 4px 6px;
+    background: #638587;
+    text-decoration: none;
+    color: #1f1f1f;
+    font-weight: bold;
+}
+
+#nav li a:hover {
+    border-color: #DD1B00;
+}
+
+#nav ul ul a {
+    background: #CCDDEE;
+    font-size: 80%;
+}
+
+.listingblock {
+    margin: 0;
+    background: #C82A00;
+    border: solid #BBBBBB 1px;
+    padding: 0 0.5em 0 0.5em;
+}
+
+dt {
+    font-weight: bold;
+}
