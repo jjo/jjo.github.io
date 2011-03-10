@@ -1,0 +1,146 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="generator" content="AsciiDoc 8.5.2">
+<title></title>
+<title>awb Commands</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link rel="stylesheet" type="text/css" href="../css/layout.css">
+<link rel="copyright" href="../copyright.html">
+<link rel="icon" type="image/png" href="../img/favicon.png">
+<meta name="generator" content="AsciiDoc Website Builder (using AsciiDoc 8.5.2)">
+<meta name="author" content="JuanJo Ciarlante">
+</head>
+<body>
+<?insert meta description html?>
+<div id="cont">
+<div id="nav">
+<center><img src="../img/jjo.png" alt="awb logo"></center>
+<ul>
+<li>
+<p><a href="../index.html">Jjo’s Home</a></p>
+</li>
+<li>
+<p><a href="../doc/index.html">Projects</a></p>
+<ul>
+<li>
+<p><a href="http://github.com/jjo/openvpn-ipv6">OpenVPN over IPv6 (feat_ipv6_transport)</a></p>
+</li>
+<li>
+<p><a href="http://juanjosec.blogspot.com/">My blog</a></p>
+</li>
+<li>
+<p><a href="../doc/other.html">Other stuff</a></p>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+<div id="content">
+<hr>
+<h1><a name="_awb_commands"></a>awb Commands</h1>
+<p>Commands may be used anywhere in an awb source file, but the most common place to use them is in templates. &lt;? and ?&gt; delimit awb commands (like php). The following commands are available:</p>
+<hr>
+<h2><a name="_global_commands"></a>Global commands</h2>
+<dl>
+<dt>insert siteroot</dt>
+<dd>
+<p>Inserts the siteroot defined in awb.conf</p>
+</dd>
+<dt>insert siteroot dots</dt>
+<dd>
+<p>Inserts parent path dots (such as <tt>../../../</tt> to the root of the site. This is particularly useful for sites that are located in a filesystem rather than being served over http.</p>
+</dd>
+<dt>insert title</dt>
+<dd>
+<p>Inserts the title of the AsciiDoc source file that is being processed.</p>
+</dd>
+<dt>insert meta description html</dt>
+<dt>insert meta description xhtml</dt>
+<dd>
+<p>These both insert a &lt;meta name="description" content="A description of the page"&gt; tag. If specified as xhtml, the closing / is also included. If the document has no description, this command is replaced with nothing (rather than an empty description). In regular documents, the description must be on the fourth line, and that line must start with “//”. This makes it a comment to AsciiDoc, so your description won’t appear in the main text of the page. For galleries, the intro or caption will be used.</p>
+</dd>
+<dt>insert content</dt>
+<dd>
+<p>Inserts the content of the page. The meaning of content depends on the template being used, but it follows common sense and really shouldn’t be confusing.</p>
+</dd>
+<dt>insert breadcrumbs</dt>
+<dd>
+<p>Inserts a breadcrumb trail as an unordered list, complete with links for previous directories up the hierarchy. Style this with CSS if you want special formatting like a horizontal arrangement.</p>
+</dd>
+<dt>insert name</dt>
+<dd>
+<p>Inserts the directory name defined in awbdir.conf</p>
+</dd>
+<dt>insert user option "option"</dt>
+<dd>
+<p>Inserts a user-defined option from awbdir.conf. The double-quotes are required.</p>
+</dd>
+<dt>insert page date "strftime format string"</dt>
+<dd>
+<p>Inserts the date (file’s mtime) of the page being processed. If the format string is not specified, the default %A, %B %e, %Y (eg. Monday, January 1, 2008) is used.</p>
+</dd>
+</dl>
+<hr>
+<h2><a name="_blog_commands"></a>Blog Commands</h2>
+<dl>
+<dt>insert blog recent</dt>
+<dd>
+<p>Inserts a list of the most recent blog posts. Note: Using this command would result in rebuilding every post in the blog every time a new post is added.</p>
+</dd>
+<dt>insert magazine recent</dt>
+<dd>
+<p>Inserts a list of recent editions of the magazine-like blog. Note: Using this command would result in rebuilding every post in the blog every time a new magazine is added.</p>
+</dd>
+<dt>insert magazine contents</dt>
+<dd>
+<p>Inserts a list of all posts belonging to the current magazine.</p>
+</dd>
+<dt>insert magazine title</dt>
+<dd>
+<p>Inserts the title of the current magazine.</p>
+</dd>
+<dt>insert magazine date "strftime format string"</dt>
+<dd>
+<p>Inserts the date of the current magazine. If the format string is not specified, the default %A, %B %e, %Y (eg. Monday, January 1, 2008) is used.</p>
+</dd>
+</dl>
+<hr>
+<h2><a name="_gallery_commands"></a>Gallery Commands</h2>
+<dl>
+<dt>insert room title</dt>
+<dd>
+<p>Inserts the title of the gallery room, as defined in the .gal.txt file.</p>
+</dd>
+<dt>insert room intro</dt>
+<dd>
+<p>Inserts the intro of the gallery room, as defined in the .gal.txt file.</p>
+</dd>
+<dt>insert room filename</dt>
+<dd>
+<p>Inserts the filename (without the .gal.txt extension) of the room file. This is useful when you want photos in subdirectories, rather than the same directory as the room file.</p>
+</dd>
+<dt>insert photo filename</dt>
+<dd>
+<p>Inserts the filename of the current photo (including the extension).</p>
+</dd>
+<dt>insert photo title</dt>
+<dd>
+<p>Inserts the title of the photo.</p>
+</dd>
+<dt>insert photo caption</dt>
+<dd>
+<p>Inserts the caption of the photo.</p>
+</dd>
+</dl>
+</div>
+<div id="foot">
+<p>Last Updated Wednesday, January 26 2011</p>
+<p>Copyleft © 20xx JuanJo Ciarlante</p>
+</div>
+</div>
+<hr>
+<p><small>Last updated 2011-03-10 10:58:52 CEST</small></p>
+</body>
+</html>

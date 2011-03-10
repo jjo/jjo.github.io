@@ -1,0 +1,101 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="generator" content="AsciiDoc 8.5.2">
+<title></title>
+<title>Templates</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link rel="stylesheet" type="text/css" href="../css/layout.css">
+<link rel="copyright" href="../copyright.html">
+<link rel="icon" type="image/png" href="../img/favicon.png">
+<meta name="generator" content="AsciiDoc Website Builder (using AsciiDoc 8.5.2)">
+<meta name="author" content="JuanJo Ciarlante">
+</head>
+<body>
+<?insert meta description html?>
+<div id="cont">
+<div id="nav">
+<center><img src="../img/jjo.png" alt="awb logo"></center>
+<ul>
+<li>
+<p><a href="../index.html">Jjo’s Home</a></p>
+</li>
+<li>
+<p><a href="../doc/index.html">Projects</a></p>
+<ul>
+<li>
+<p><a href="http://github.com/jjo/openvpn-ipv6">OpenVPN over IPv6 (feat_ipv6_transport)</a></p>
+</li>
+<li>
+<p><a href="http://juanjosec.blogspot.com/">My blog</a></p>
+</li>
+<li>
+<p><a href="../doc/other.html">Other stuff</a></p>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+<div id="content">
+<hr>
+<h1><a name="_templates"></a>Templates</h1>
+<p>Each directory in the source tree may contain a configuration file named template.conf. This file contains the page templates to be used by awb. If a template is not specified, very basic defaults are provided.</p>
+<p>Here is an example of template.conf:</p>
+<table border="0" bgcolor="#E8E8E8" width="100%" cellpadding="10">
+<tr>
+<td>
+<pre>
+[main template]
+This template is the first you would typically define.
+
+Typically you would put here some stuff that you want
+to insert before the main text of your page, like a
+navigation bar.
+
+Then you insert the page content like this:
+
+&lt;?insert content?&gt;
+
+Then you can write your footer.
+
+If you need special formatting like &lt;div&gt; or &lt;table&gt;,
+remember that you can add these using the methods that
+AsciiDoc provides.
+
+[sub template]
+This template replaces &lt;?insert content?&gt; from the main
+template.  Use this when you want a subdirectory to add
+something to the main template inherited from the parent
+without overriding it completely.
+
+[post template]
+When you write a blog, this template is applied to each
+blog post.  It replaces &lt;?insert content?&gt; in the sub
+template.
+
+[room template]
+When you write a gallery room, this template is applied
+to it.  It replaces &lt;?insert content?&gt; in the sub
+template.
+
+[room photo template]
+This template is applied to each photo in a gallery room.
+
+[photo template]
+This template replaces &lt;?insert content?&gt; in the sub
+template for each photo-individual file in a gallery.
+</pre></td>
+</tr>
+</table>
+<p>awb templates are cascading. This allows templates to be defined once in the root of the website, and applied everywhere.</p>
+</div>
+<div id="foot">
+<p>Last Updated Wednesday, January 26 2011</p>
+<p>Copyleft © 20xx JuanJo Ciarlante</p>
+</div>
+</div>
+<hr>
+<p><small>Last updated 2011-03-10 10:58:51 CEST</small></p>
+</body>
+</html>

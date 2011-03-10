@@ -1,0 +1,93 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<meta name="generator" content="AsciiDoc 8.5.2">
+<title></title>
+<title>Directory Configuration</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<link rel="stylesheet" type="text/css" href="../css/layout.css">
+<link rel="copyright" href="../copyright.html">
+<link rel="icon" type="image/png" href="../img/favicon.png">
+<meta name="generator" content="AsciiDoc Website Builder (using AsciiDoc 8.5.2)">
+<meta name="author" content="JuanJo Ciarlante">
+</head>
+<body>
+<?insert meta description html?>
+<div id="cont">
+<div id="nav">
+<center><img src="../img/jjo.png" alt="awb logo"></center>
+<ul>
+<li>
+<p><a href="../index.html">Jjo’s Home</a></p>
+</li>
+<li>
+<p><a href="../doc/index.html">Projects</a></p>
+<ul>
+<li>
+<p><a href="http://github.com/jjo/openvpn-ipv6">OpenVPN over IPv6 (feat_ipv6_transport)</a></p>
+</li>
+<li>
+<p><a href="http://juanjosec.blogspot.com/">My blog</a></p>
+</li>
+<li>
+<p><a href="../doc/other.html">Other stuff</a></p>
+</li>
+</ul>
+</li>
+</ul>
+</div>
+<div id="content">
+<hr>
+<h1><a name="_directory_configuration"></a>Directory Configuration</h1>
+<p>Each directory in the source tree may contain a configuration file named awbdir.conf. This file specifies directory-specific options to be used by awb.</p>
+<p>It will look something like this:</p>
+<table border="0" bgcolor="#E8E8E8" width="100%" cellpadding="10">
+<tr>
+<td>
+<pre>
+[dir setup]
+type: normal
+name: AsciiDoc Website Builder
+</pre></td>
+</tr>
+</table>
+<p>awbdir.conf options cascade from a directory to its children. If awbdir.conf is not specified for a directory, the options from its parent will be used. This is quite convenient, as child directories need only override the parent options that do not apply. The only exception is the directory name, which does not cascade. Instead, the actual directory name is added to the parent’s name if one is not supplied.</p>
+<hr>
+<h2><a name="_dir_setup_section"></a>[dir setup] section</h2>
+<dl>
+<dt>type</dt>
+<dd>
+<p>can be one of <em>normal</em>, <em>blog</em>, or <em>gallery</em>. <em>normal</em> is the default. The meaning of the types is explained <a href="dirtypes.html">here</a>.</p>
+</dd>
+<dt>name</dt>
+<dd>
+<p>A descriptive name of the directory, as shown in the breadcrumb trail and auto-generated index.html file.</p>
+</dd>
+</dl>
+<hr>
+<h2><a name="_blog_section"></a>[blog] section</h2>
+<p>This section defines settings used if the directory type is blog.</p>
+<dl>
+<dt>num main posts</dt>
+<dd>
+<p>The number of posts to show on the index.html page of the blog.</p>
+</dd>
+<dt>num recent posts</dt>
+<dd>
+<p>The number of post titles to show in the "recent posts" list, and also the number of magazine titles to show in the "recent magazines" list.</p>
+</dd>
+</dl>
+<hr>
+<h2><a name="_user_section"></a>[user] section</h2>
+<p>Here you can define any option you like. It can be referred to in the template. This is useful when you want to use the same template across the site, but change small parts of it (eg. an image).</p>
+</div>
+<div id="foot">
+<p>Last Updated Wednesday, January 26 2011</p>
+<p>Copyleft © 20xx JuanJo Ciarlante</p>
+</div>
+</div>
+<hr>
+<p><small>Last updated 2011-03-10 10:58:49 CEST</small></p>
+</body>
+</html>
